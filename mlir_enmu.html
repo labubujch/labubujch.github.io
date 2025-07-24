@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>交互式报告：MLIR EnumCreateOp 设计方案</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Tech Slate -->
+    <!-- Application Structure Plan: 本应用采用分层、主题化的信息架构，旨在将复杂的技术报告转化为一个易于理解的交互式体验。结构包括：1. **引导区**：清晰地提出核心提案。2. **核心对比区**：通过并排布局和视觉辅助，直观对比“旧方法 (SSA Operands)”与“新方法 (Attributes)”，这是理解提案价值的关键。3. **技术深潜区**：使用标签页（Tabs）将TableGen定义、Python代码生成和C++后端处理这三个技术实现细节进行分组，避免信息过载，让用户按需探索。4. **优势展示区**：以卡片网格形式突出展示新方案带来的核心收益，一目了然。5. **实时演示区**：这是应用的“亮点”，用户可以亲自输入枚举数据，应用会动态生成两种不同风格的IR代码，将“IR更简洁”这一抽象优势具体化、可触摸化。此结构旨在引导用户从宏观概念到微观实现，再到实际效果，形成一个完整的认知闭环，远比线性阅读报告更高效、更有趣。 -->
+    <!-- Visualization & Content Choices: 报告信息 -> 目标 -> 呈现方式 -> 交互 -> 理由 -> 库/方法。1. **对比两种设计思路** -> **目标: 对比** -> **呈现: 并排卡片+视觉图示** -> **交互: 无，静态对比** -> **理由: 直接对比最能凸显新方案的简洁性。** -> **方法: HTML/Tailwind**。2. **展示Op定义、代码生成、后端处理** -> **目标: 组织** -> **呈现: 标签页(Tabs)内嵌代码块** -> **交互: 点击切换标签** -> **理由: 将不同阶段的实现细节分组，结构清晰，避免页面过长。** -> **方法: HTML/Tailwind/JS**。3. **总结方案优点** -> **目标: 告知** -> **呈现: 图标+文字的卡片网格** -> **交互: 无** -> **理由: 视觉吸引力强，易于快速消化关键信息。** -> **方法: HTML/Tailwind**。4. **展示IR生成过程** -> **目标: 互动与证明** -> **呈现: 表单+动态代码预览区** -> **交互: 用户输入数据，JS动态生成并更新IR代码** -> **理由: 将抽象的“IR生成”过程变为可操作的实时体验，是理解方案价值的最有力证明。** -> **方法: HTML/Tailwind/JS**。 -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans SC', sans-serif;
+            background-color: #f8fafc; /* slate-50 */
+            color: #334155; /* slate-700 */
+        }
+        .tab-btn {
+            transition: all 0.3s ease;
+        }
+        .tab-btn.active {
+            background-color: #0284c7; /* sky-600 */
+            color: white;
+            border-color: #0284c7; /* sky-600 */
+        }
+        .code-block {
+            background-color: #1e293b; /* slate-800 */
+            color: #e2e8f0; /* slate-200 */
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .benefit-card {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .benefit-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+        .pill-remove {
+            margin-left: 0.5rem;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="antialiased">
+
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <h1 class="text-4xl md:text-5xl font-bold text-slate-800 mb-2">MLIR Op 设计革新</h1>
+            <p class="text-lg text-slate-600 max-w-3xl mx-auto">探索一种更简洁、高效的 `EnumCreateOp` 实现方式：<br class="hidden sm:block">将枚举变体信息作为 <span class="font-semibold text-sky-600">Attribute</span> 传递</p>
+        </header>
+
+        <main>
+            <!-- Section 1: Core Comparison -->
+            <section id="comparison" class="mb-16">
+                <h2 class="text-3xl font-bold text-center text-slate-800 mb-8">核心思想：化繁为简</h2>
+                <div class="grid md:grid-cols-2 gap-8 items-start">
+                    <!-- Old Way -->
+                    <div class="border border-red-200 bg-red-50 rounded-lg p-6">
+                        <h3 class="text-2xl font-semibold text-red-800 mb-4">传统方法：SSA Operands</h3>
+                        <p class="text-red-700 mb-4">每个枚举变体都作为独立的SSA操作数传入。这导致IR冗长，定义-使用链复杂，后端处理分散。</p>
+                        <div class="code-block rounded-lg p-4 text-sm">
+                            <span class="text-gray-400">// 概念性IR，非真实</span>
+                            <br>%c0 = arith.constant 0 : i32
+                            <br>%c1 = arith.constant 1 : i32
+                            <br>%c2 = arith.constant 2 : i32
+                            <br>
+                            <br>%enum = pdlir.enum.create <span class="text-red-400">"Red", %c0, "Green", %c1, "Blue", %c2</span>
+                        </div>
+                        <div class="mt-4 text-center text-red-600 font-semibold">
+                            <span>🔗</span> IR冗余，处理复杂
+                        </div>
+                    </div>
+                    <!-- New Way -->
+                    <div class="border border-green-200 bg-green-50 rounded-lg p-6 ring-2 ring-sky-500/50">
+                        <h3 class="text-2xl font-semibold text-green-800 mb-4">新设计：Attributes</h3>
+                        <p class="text-green-700 mb-4">所有变体信息被打包成一个结构化的`ArrayAttr`属性。IR更简洁，信息集中，后端处理更直接。</p>
+                        <div class="code-block rounded-lg p-4 text-sm">
+                            <span class="text-gray-400">// 推荐的IR设计</span>
+                            <br>%enum = pdlir.enum.create "Color" {
+                            <br>  <span class="text-green-400">variants</span> = [
+                            <br>    { name = "Red",   value = 0 : i32 },
+                            <br>    { name = "Green", value = 1 : i32 },
+                            <br>    { name = "Blue",  value = 2 : i32 }
+                            <br>  ]
+                            <br>}
+                        </div>
+                        <div class="mt-4 text-center text-green-600 font-semibold">
+                            <span>📦</span> IR简洁，信息集中
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section 2: Technical Deep Dive -->
+            <section id="deep-dive" class="mb-16">
+                <h2 class="text-3xl font-bold text-center text-slate-800 mb-8">技术实现深潜</h2>
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <div class="border-b border-slate-200 mb-4">
+                        <nav class="-mb-px flex space-x-4" aria-label="Tabs">
+                            <button id="tab-btn-td" class="tab-btn active whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm rounded-t-md">Op定义 (TableGen)</button>
+                            <button id="tab-btn-py" class="tab-btn whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm rounded-t-md">IR生成 (Python)</button>
+                            <button id="tab-btn-cpp" class="tab-btn whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm rounded-t-md">后端处理 (C++)</button>
+                        </nav>
+                    </div>
+                    <div id="tab-content">
+                        <div id="tab-panel-td" class="tab-panel">
+                            <p class="text-slate-600 mb-4">使用TableGen声明式地定义`EnumCreateOp`。关键在于将`variants`定义为一个`ArrayAttr`类型的属性，而不是可变数量的`arguments`。</p>
+                            <div class="code-block rounded-lg p-4 text-sm">
+def pdl_EnumCreateOp : pdl_Op&lt;"enum.create"&gt; {
+  let summary = "创建枚举类型并定义其变体。";
+  
+  let arguments = (ins); // 没有SSA操作数
+
+  let attributes = [
+    StringAttr:$enumName,
+    ArrayAttr:$variants // 所有变体信息在此
+  ];
+  
+  let results = (outs Type:$enumType);
+
+  let assemblyFormat = "$enumName attr-dict `:` type($enumType)";
+  
+  let hasVerifier = 1;
+}</div>
+                        </div>
+                        <div id="tab-panel-py" class="tab-panel hidden">
+                            <p class="text-slate-600 mb-4">在Python代码生成器中，收集所有变体信息，构造一个`DictAttr`的列表，最后用`ArrayAttr.get()`将其包装起来，传递给`EnumCreateOp`的构造函数。</p>
+                            <div class="code-block rounded-lg p-4 text-sm">
+def visitEnum(enum_ty, enum_name, fields):
+    variant_attrs = []
+    for name, value in fields:
+        variant_dict = DictAttr.get({
+            "name": StringAttr.get(name),
+            "value": IntegerAttr.get(i32_type, value)
+        })
+        variant_attrs.append(variant_dict)
+
+    variants_attr = ArrayAttr.get(variant_attrs)
+    enum_name_attr = StringAttr.get(enum_name)
+
+    return pdlir.EnumCreateOp(
+        enum_name_attr,
+        variants_attr,
+        enum_ty
+    )</div>
+                        </div>
+                        <div id="tab-panel-cpp" class="tab-panel hidden">
+                            <p class="text-slate-600 mb-4">C++后端遍可以直接从操作中获取`variants`属性，然后遍历这个数组来访问每一个变体的名称和值，处理逻辑非常直接。</p>
+                            <div class="code-block rounded-lg p-4 text-sm">
+void processEnum(pdlir::EnumCreateOp op) {
+    llvm::outs() &lt;&lt; "Enum: " &lt;&lt; op.getEnumName() &lt;&lt; "\n";
+
+    mlir::ArrayAttr variants = op.getVariants();
+    for (mlir::Attribute attr : variants) {
+        auto dictAttr = attr.cast&lt;mlir::DictionaryAttr&gt;();
+        
+        auto name = dictAttr.get("name").cast&lt;mlir::StringAttr&gt;();
+        auto value = dictAttr.get("value").cast&lt;mlir::IntegerAttr&gt;();
+
+        llvm::outs() &lt;&lt; "  - " &lt;&lt; name.getValue() 
+                     &lt;&lt; " = " &lt;&lt; value.getInt() &lt;&lt; "\n";
+    }
+}</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Section 3: Benefits -->
+            <section id="benefits" class="mb-16">
+                <h2 class="text-3xl font-bold text-center text-slate-800 mb-8">新设计带来的优势</h2>
+                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div class="benefit-card bg-white rounded-lg shadow p-6 text-center">
+                        <div class="text-4xl mb-3">✨</div>
+                        <h3 class="text-xl font-semibold text-slate-800 mb-2">IR 更简洁</h3>
+                        <p class="text-slate-600">消除了为每个变体生成`arith.constant`的冗余操作，使IR更加紧凑和可读。</p>
+                    </div>
+                    <div class="benefit-card bg-white rounded-lg shadow p-6 text-center">
+                        <div class="text-4xl mb-3">⚙️</div>
+                        <h3 class="text-xl font-semibold text-slate-800 mb-2">后端更易处理</h3>
+                        <p class="text-slate-600">后端只需解析单个属性即可获得所有枚举项，无需遍历复杂的SSA定义-使用链。</p>
+                    </div>
+                    <div class="benefit-card bg-white rounded-lg shadow p-6 text-center">
+                        <div class="text-4xl mb-3">🚀</div>
+                        <h3 class="text-xl font-semibold text-slate-800 mb-2">易于扩展</h3>
+                        <p class="text-slate-600">未来可轻松在`DictAttr`中添加文档、元数据等新字段，而不破坏现有结构。</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section 4: Live Demo -->
+            <section id="demo">
+                <h2 class="text-3xl font-bold text-center text-slate-800 mb-8">实时IR生成演示</h2>
+                <div class="grid lg:grid-cols-2 gap-8">
+                    <!-- Controls -->
+                    <div class="bg-white rounded-lg shadow-lg p-6">
+                        <h3 class="text-xl font-semibold mb-4">1. 定义你的枚举</h3>
+                        <div class="mb-4">
+                            <label for="enumName" class="block text-sm font-medium text-slate-700 mb-1">枚举名称</label>
+                            <input type="text" id="enumName" value="Color" class="w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-slate-700 mb-1">枚举变体 (Name=Value)</label>
+                            <div id="variantsContainer" class="mb-2 space-y-2">
+                                <!-- Variants will be added here -->
+                            </div>
+                            <div class="flex gap-2">
+                                <input type="text" id="variantName" placeholder="变体名 (e.g., Red)" class="flex-1 p-2 border border-slate-300 rounded-md shadow-sm">
+                                <input type="number" id="variantValue" placeholder="值" class="w-20 p-2 border border-slate-300 rounded-md shadow-sm">
+                                <button id="addVariantBtn" class="bg-sky-600 text-white px-4 py-2 rounded-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500">添加</button>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Output -->
+                    <div>
+                        <h3 class="text-xl font-semibold mb-4">2. 查看生成的IR</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <h4 class="font-semibold text-green-700 mb-2">新设计 (Attribute)</h4>
+                                <div id="newIrOutput" class="code-block rounded-lg p-4 text-sm min-h-[150px]"></div>
+                            </div>
+                             <div>
+                                <h4 class="font-semibold text-red-700 mb-2">传统方法 (SSA Operands)</h4>
+                                <div id="oldIrOutput" class="code-block rounded-lg p-4 text-sm min-h-[150px]"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="text-center mt-16 border-t border-slate-200 pt-8">
+            <p class="text-slate-500">这是一个根据技术报告生成的交互式演示页面。</p>
+        </footer>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Tabs
+            const tabButtons = {
+                td: document.getElementById('tab-btn-td'),
+                py: document.getElementById('tab-btn-py'),
+                cpp: document.getElementById('tab-btn-cpp'),
+            };
+            const tabPanels = {
+                td: document.getElementById('tab-panel-td'),
+                py: document.getElementById('tab-panel-py'),
+                cpp: document.getElementById('tab-panel-cpp'),
+            };
+
+            Object.keys(tabButtons).forEach(key => {
+                tabButtons[key].addEventListener('click', () => {
+                    Object.values(tabButtons).forEach(btn => btn.classList.remove('active'));
+                    Object.values(tabPanels).forEach(panel => panel.classList.add('hidden'));
+                    tabButtons[key].classList.add('active');
+                    tabPanels[key].classList.remove('hidden');
+                });
+            });
+
+            // Demo
+            const enumNameInput = document.getElementById('enumName');
+            const variantNameInput = document.getElementById('variantName');
+            const variantValueInput = document.getElementById('variantValue');
+            const addVariantBtn = document.getElementById('addVariantBtn');
+            const variantsContainer = document.getElementById('variantsContainer');
+            const newIrOutput = document.getElementById('newIrOutput');
+            const oldIrOutput = document.getElementById('oldIrOutput');
+
+            let variants = [];
+            let nextValue = 0;
+            
+            function renderVariants() {
+                variantsContainer.innerHTML = '';
+                variants.forEach((variant, index) => {
+                    const pill = document.createElement('div');
+                    pill.className = 'pill bg-slate-200 text-slate-800';
+                    pill.innerHTML = `<span>${variant.name}=${variant.value}</span><span class="pill-remove" data-index="${index}">×</span>`;
+                    variantsContainer.appendChild(pill);
+                });
+                
+                document.querySelectorAll('.pill-remove').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const index = parseInt(e.target.dataset.index, 10);
+                        variants.splice(index, 1);
+                        updateDemo();
+                    });
+                });
+            }
+
+            function generateIR() {
+                const enumName = enumNameInput.value || 'MyEnum';
+                const typeName = `!pdlir.enum<"${enumName}">`;
+
+                // New IR
+                let newIr = `%enum = pdlir.enum.create "${enumName}" {\n`;
+                if (variants.length > 0) {
+                    newIr += `  variants = [\n`;
+                    variants.forEach(v => {
+                        newIr += `    { name = "${v.name}", value = ${v.value} : i32 },\n`;
+                    });
+                    newIr += `  ]\n`;
+                } else {
+                    newIr += `  variants = []\n`;
+                }
+                newIr += `} : ${typeName}`;
+                newIrOutput.textContent = newIr;
+
+                // Old IR
+                let oldIr = '';
+                if (variants.length > 0) {
+                    variants.forEach((v, i) => {
+                        oldIr += `%c${i} = arith.constant ${v.value} : i32\n`;
+                    });
+                    oldIr += '\n';
+                    oldIr += `%enum = pdlir.enum.create `;
+                    const operandPairs = variants.map((v, i) => `"${v.name}", %c${i}`).join(', ');
+                    oldIr += operandPairs;
+                    oldIr += ` : ${typeName}`;
+                } else {
+                    oldIr = `%enum = pdlir.enum.create : ${typeName}`;
+                }
+                oldIrOutput.textContent = oldIr;
+            }
+
+            function updateDemo() {
+                renderVariants();
+                generateIR();
+            }
+
+            function addVariant() {
+                const name = variantNameInput.value.trim();
+                const value = variantValueInput.value.trim();
+                if (name && value !== '') {
+                    variants.push({ name, value: parseInt(value, 10) });
+                    variantNameInput.value = '';
+                    nextValue = parseInt(value, 10) + 1;
+                    variantValueInput.value = nextValue;
+                    updateDemo();
+                    variantNameInput.focus();
+                }
+            }
+
+            addVariantBtn.addEventListener('click', addVariant);
+            variantNameInput.addEventListener('keypress', (e) => {
+                if(e.key === 'Enter') addVariant();
+            });
+            variantValueInput.addEventListener('keypress', (e) => {
+                if(e.key === 'Enter') addVariant();
+            });
+            enumNameInput.addEventListener('input', generateIR);
+
+            // Initial state
+            function initDemo() {
+                variants = [
+                    { name: 'Red', value: 0 },
+                    { name: 'Green', value: 1 },
+                    { name: 'Blue', value: 2 },
+                ];
+                nextValue = 3;
+                variantValueInput.value = nextValue;
+                updateDemo();
+            }
+
+            initDemo();
+        });
+    </script>
+</body>
+</html>
